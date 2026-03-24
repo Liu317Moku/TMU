@@ -12,7 +12,6 @@ Results
 
 The system successfully generates consistent and anatomically aligned surgical paths, reducing potential risks and providing a more standardized approach to path planning.
 <p align="center">
-  <img width="400" height="300" alt="image" src="https://github.com/user-attachments/assets/a52947db-0e34-43df-88a5-a8d88902ebc9" />
   <img width="300" height="300" alt="image_0101" src="https://github.com/user-attachments/assets/e2dd1c15-d6cb-4bbf-8903-6def5299250c" />
   <br/>
     <em>Paths Results</em>
