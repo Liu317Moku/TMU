@@ -5,17 +5,15 @@ import os
 import re
 from sklearn.neighbors import NearestNeighbors
 
-# ------------------------------
-# Paths (請自行檢查並修改)
-# ------------------------------
-seg_path = "/home/sandy0317/TotalSegmentator/dataset/output/final_result9/intracerebral_hemorrhage.nii.gz"
-forward_dir =  "/home/sandy0317/CranialCTProcessing/point_dataset/coronal_forward_points_0118_10151132"
-coronal_csv = "/home/sandy0317/CranialCTProcessing/point_dataset/coronal_suture_pointline/output_combined0118/coronal_suture_resampled.csv"
-output_csv = "/home/sandy0317/TotalSegmentator/point_dataset/118_12101712_surgical_entry_points_final.csv"
+#Paths
+seg_path = "/home/TotalSegmentator/dataset/output/final_result9/intracerebral_hemorrhage.nii.gz"
+forward_dir =  "/home/CranialCTProcessing/point_dataset/coronal_forward_points"
+coronal_csv = "/home/CranialCTProcessing/point_dataset/coronal_suture_pointline/coronal_suture_resampled.csv"
+output_csv = "/home/TotalSegmentator/point_dataset/surgical_entry_points_final.csv"
 
 # Debug options
 save_candidates_csv = False
-candidates_csv_path = "/home/sandy0317/TotalSegmentator/point_dataset/116_12101426_candidates_debug.csv"
+candidates_csv_path = "/home/TotalSegmentator/point_dataset/candidates_debug.csv"
 
 # Parameters for "shrunk" V-region + top-K processing
 # 這組參數比之前更保守：側向 lateral 範圍小、upward 也較保守
@@ -26,9 +24,7 @@ y_window_height = 8.0                    # y 範圍高度（縮小，原本是 1
 top_k_for_angle = 500                    # 只對 top K 最近候選計算局部法向與角度
 angle_weight_mm = 6.0                    # 角度懲罰權重（可調）
 
-# ------------------------------
 # Utility: estimate local surface normal using PCA on k-nearest neighbors
-# ------------------------------
 def local_normal_pca(points, query_point, k=30):
     """
     points: (N,3) pointcloud (assumed RAS)
@@ -38,18 +34,15 @@ def local_normal_pca(points, query_point, k=30):
     if points.shape[0] < 3:
         raise ValueError("點雲數量不足以估算法向")
     nbrs = NearestNeighbors(n_neighbors=min(k, points.shape[0]), algorithm='auto').fit(points)
-    dist, idx = nbrs.kneighbors(query_point.reshape(1, -1))
+    idx = nbrs.kneighbors(query_point.reshape(1, -1))
     neighborhood = points[idx[0]]
-    X = neighborhood - neighborhood.mean(axis=0)
+    X = neighborhood.mean(axis=0)
     cov = np.cov(X, rowvar=False)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    normal = eigvecs[:, np.argmin(eigvals)]
+    eigvals= np.linalg.eigh(cov)
     normal = normal / np.linalg.norm(normal)
     return normal
 
-# ------------------------------
-# 1) compute hematoma centroid (RAS)
-# ------------------------------
+#compute hematoma centroid (RAS)
 seg_img = sitk.ReadImage(seg_path)
 seg_array = sitk.GetArrayFromImage(seg_img)  # z,y,x (voxel index order)
 coords = np.argwhere(seg_array > 0)
@@ -59,11 +52,9 @@ if coords.shape[0] == 0:
 centroid_voxel = coords.mean(axis=0)  # in array index order (z,y,x)
 centroid_lps = seg_img.TransformContinuousIndexToPhysicalPoint(centroid_voxel[::-1])  # (x,y,z) in LPS
 centroid_ras = np.array([-centroid_lps[0], -centroid_lps[1], centroid_lps[2]])
-print("🩸 血腫質心 (RAS):", centroid_ras)
+print("血腫質心 (RAS):", centroid_ras)
 
-# ------------------------------
-# 2) read all outer skull points (assume CSVs contain RAS)
-# ------------------------------
+#read all outer skull points (assume CSVs contain RAS)
 all_points_list, layer_labels, source_files = [], [], []
 
 for file in sorted(os.listdir(forward_dir)):
@@ -85,16 +76,12 @@ for file in sorted(os.listdir(forward_dir)):
                         continue
 
 all_points = np.array(all_points_list)
-layer_labels = np.array(layer_labels)
-source_files = np.array(source_files)
 if all_points.size == 0:
     raise ValueError("資料夾中沒有任何有效的外層顱骨點！")
 
-print(f"📥 讀取到 {all_points.shape[0]} 顆外層顱骨點")
+print(f"讀取到 {all_points.shape[0]} 顆外層顱骨點")
 
-# ------------------------------
-# 3) read coronal suture and fit plane
-# ------------------------------
+#read coronal suture and fit plane
 suture_pts = []
 with open(coronal_csv, newline="") as f:
     reader = csv.reader(f)
@@ -112,58 +99,35 @@ if suture_pts.shape[0] < 10:
 suture_center = np.mean(suture_pts, axis=0)
 X = suture_pts - suture_center
 cov = np.cov(X, rowvar=False)
-eigvals, eigvecs = np.linalg.eigh(cov)
-order = np.argsort(eigvals)[::-1]
 eigvecs = eigvecs[:, order]
 suture_normal = eigvecs[:, 2]
-if suture_normal[1] < 0:
-    suture_normal = -suture_normal
 
-print(f"🧭 冠狀縫法向量: {suture_normal}")
-print(f"📍 冠狀縫中心: {suture_center}")
+print(f"冠狀縫法向量: {suture_normal}")
+print(f"冠狀縫中心: {suture_center}")
 
-# ------------------------------
-# 4) filter skull points in front of the suture plane
-# ------------------------------
-A, B, C = suture_normal
-D = -np.dot(suture_normal, suture_center)
-dist_to_plane = A * all_points[:, 0] + B * all_points[:, 1] + C * all_points[:, 2] + D
+#filter skull points in front of the suture plane
 front_mask = dist_to_plane > 0
 filtered_points_init = all_points[front_mask]
-filtered_labels_init = layer_labels[front_mask]
-filtered_sources_init = source_files[front_mask]
 
 # try flip normal if nothing found
 if filtered_points_init.shape[0] == 0:
-    print("⚠️ 找不到位於冠狀縫法向正側的點，嘗試翻轉法向重試。")
-    A, B, C = -A, -B, -C
-    D = -np.dot([A,B,C], suture_center)
-    dist_to_plane = A * all_points[:, 0] + B * all_points[:, 1] + C * all_points[:, 2] + D
+    print("找不到位於冠狀縫法向正側的點，嘗試翻轉法向重試。")
     front_mask = dist_to_plane > 0
     filtered_points_init = all_points[front_mask]
-    filtered_labels_init = layer_labels[front_mask]
-    filtered_sources_init = source_files[front_mask]
 
 if filtered_points_init.shape[0] == 0:
-    raise ValueError("⚠️ 沒有位於冠狀縫前方的顱骨點！請檢查座標系方向或輸入點雲。")
+    raise ValueError("沒有位於冠狀縫前方的顱骨點！請檢查座標系方向或輸入點雲。")
 
-print(f"✅ 篩出 {filtered_points_init.shape[0]} 個在冠狀縫前方的顱骨點 (初始)")
+print(f" 篩出 {filtered_points_init.shape[0]} 個在冠狀縫前方的顱骨點 (初始)")
 
-# ------------------------------
-# 5) shrunk V-region 收集候選（較保守）
-# ------------------------------
+#shrunk V-region 收集候選（較保守）
 midline_x = np.median(suture_pts[:, 0])
-print(f"🧠 血腫位於 X={centroid_ras[0]:.2f}, Y={centroid_ras[1]:.2f}, Z={centroid_ras[2]:.2f}")
-pts_all = filtered_points_init.copy()
-labs_all = filtered_labels_init.copy()
-srcs_all = filtered_sources_init.copy()
+print(f" 血腫位於 X={centroid_ras[0]:.2f}, Y={centroid_ras[1]:.2f}, Z={centroid_ras[2]:.2f}")
 
 y_min_all, y_max_all = pts_all[:, 1].min(), pts_all[:, 1].max()
-print(f"📊 前方顱骨 Y 範圍: {y_min_all:.1f} ~ {y_max_all:.1f}")
+print(f" 前方顱骨 Y 範圍: {y_min_all:.1f} ~ {y_max_all:.1f}")
 
 candidate_pts_list = []
-candidate_labs_list = []
-candidate_srcs_list = []
 
 for upward in upward_offsets:
     for lateral in lateral_limits:
@@ -173,24 +137,17 @@ for upward in upward_offsets:
             # lateral windows (左右)
             right_mask = (pts_all[:, 0] > midline_x + mid_ex) & (pts_all[:, 0] < midline_x + lateral)
             left_mask  = (pts_all[:, 0] < midline_x - mid_ex) & (pts_all[:, 0] > midline_x - lateral)
-            up_mask = (pts_all[:, 1] >= y_min_limit) & (pts_all[:, 1] <= y_max_limit)
             region_mask = up_mask & (right_mask | left_mask)
             cand_count = np.count_nonzero(region_mask)
             print(f"嘗試 upward={upward} lateral={lateral} mid_ex={mid_ex} -> Y∈[{y_min_limit:.1f},{y_max_limit:.1f}] 候選={cand_count}")
-            if cand_count > 0:
-                candidate_pts_list.append(pts_all[region_mask])
-                candidate_labs_list.append(labs_all[region_mask])
-                candidate_srcs_list.append(srcs_all[region_mask])
-
+                
 # 合併所有候選（如果有）
 if len(candidate_pts_list) > 0:
     pts = np.vstack(candidate_pts_list)
-    labs = np.concatenate(candidate_labs_list)
-    srcs = np.concatenate(candidate_srcs_list)
-    print(f"✅ 共收集到 {pts.shape[0]} 個 V 區候選點 (全參數組合)")
+    print(f" 共收集到 {pts.shape[0]} 個 V 區候選點 (全參數組合)")
 else:
     pts = None
-    print("⚠️ 未能在任何參數組合中找到 V 區候選點")
+    print(" 未能在任何參數組合中找到 V 區候選點")
 
 # optional: save candidates for debug
 if save_candidates_csv and (pts is not None):
@@ -198,25 +155,24 @@ if save_candidates_csv and (pts is not None):
         w = csv.writer(f)
         w.writerow(["x","y","z","layer_mm","source"])
         for i,p in enumerate(pts):
-            w.writerow([p[0], p[1], p[2], labs[i], srcs[i]])
-    print(f"🔎 已輸出候選點至 {candidates_csv_path}")
+            w.writerow([p[0], p[1], p[2]])
+    print(f" 已輸出候選點至 {candidates_csv_path}")
 
-# ------------------------------
-# 6) 選點策略：
+
+#選點策略：
 #    - 若有 V 區候選：先用距離排序，取 top_k_for_angle 最近的 few hundred
 #      再對這些計算 local normal + angle，並用 score = distance + angle_weight * (angle_deg / 90)
 #      最小 score 為最終選點（angle 被歸一化到 0..1）
 #    - 若沒有候選：回退到前方最近點
-# ------------------------------
 def write_output_and_print(entry_point, entry_layer, entry_src, centroid, angle_deg=None, dist_mm=None, params=None):
     print("────────────────────────────")
-    print(f"🧱 建議外層顱骨點 (RAS): {entry_point}")
-    print(f"📏 層距: {entry_layer} mm")
+    print(f" 建議外層顱骨點 (RAS): {entry_point}")
+    print(f" 層距: {entry_layer} mm")
     if dist_mm is not None:
-        print(f"📐 與血腫質心距離: {dist_mm:.2f} mm")
+        print(f" 與血腫質心距離: {dist_mm:.2f} mm")
     if angle_deg is not None:
-        print(f"📏 與局部顱骨法向夾角: {angle_deg:.1f} °")
-    print(f"📄 來源檔案: {entry_src}")
+        print(f" 與局部顱骨法向夾角: {angle_deg:.1f} °")
+    print(f" 來源檔案: {entry_src}")
     print("────────────────────────────")
     # 輸出 CSV (寫入更多欄位)
     with open(output_csv, "w", newline="") as f:
@@ -232,40 +188,28 @@ def write_output_and_print(entry_point, entry_layer, entry_src, centroid, angle_
             writer.writerow(["distance_mm", dist_mm])
         if angle_deg is not None:
             writer.writerow(["angle_deg_local_normal", angle_deg])
-    print(f"✅ 已輸出結果至: {output_csv}")
+    print(f"已輸出結果至: {output_csv}")
 
 if pts is None or pts.shape[0] == 0:
-    # fallback: take the nearest point among all front pts (pts_all)
-    print("⚠️ 自動參數嘗試未找到紅色 V 區候選點，將退回到「前方最近點」作為後備。")
+    print("自動參數嘗試未找到紅色 V 區候選點，將退回到「前方最近點」作為後備。")
     distances_all = np.linalg.norm(pts_all - centroid_ras, axis=1)
     min_idx_all = np.argmin(distances_all)
-    closest_point = pts_all[min_idx_all]
-    closest_layer = labs_all[min_idx_all]
-    closest_file = srcs_all[min_idx_all]
-    closest_distance = distances_all[min_idx_all]
 
     try:
         ln = local_normal_pca(all_points, closest_point, k=30)
         path_vec = (centroid_ras - closest_point)
-        path_vec = path_vec / np.linalg.norm(path_vec)
         angle = np.degrees(np.arccos(np.clip(np.abs(np.dot(path_vec, ln)), -1.0, 1.0)))
     except Exception as e:
-        print("⚠️ 無法估算局部法向:", e)
-        ln = None
-        angle = None
+        print(" 無法估算局部法向:", e)
 
-    write_output_and_print(closest_point, closest_layer, closest_file, centroid_ras, angle_deg=angle, dist_mm=closest_distance, params=None)
+    write_output_and_print(centroid_ras, angle_deg=angle, dist_mm=closest_distance, params=None)
 
 else:
     # 先以距離排序並取 top-K（避免對 100w 點計算法向）
-    distances = np.linalg.norm(pts - centroid_ras, axis=1)
-    sort_idx = np.argsort(distances)
     top_k = min(top_k_for_angle, pts.shape[0])
     top_idx = sort_idx[:top_k]
 
-    top_pts = pts[top_idx]
     top_labs = labs[top_idx]
-    top_srcs = srcs[top_idx]
     top_dists = distances[top_idx]
 
     best_score = float("inf")
@@ -276,25 +220,17 @@ else:
         try:
             ln = local_normal_pca(all_points, p, k=30)
             path_vec = (centroid_ras - p)
-            path_vec = path_vec / np.linalg.norm(path_vec)
-            cosang = np.clip(np.dot(path_vec, ln), -1.0, 1.0)
             angle_deg = np.degrees(np.arccos(np.abs(cosang)))  # 0..180
         except Exception as e:
-            # 若法向估算失敗，給一個中性角度懲罰（例如 90deg）
             angle_deg = 90.0
 
         # normalize angle 0..1 by 90deg (90deg = 1.0)
-        angle_norm = min(angle_deg / 90.0, 1.0)
-        score = top_dists[i_local] + angle_weight_mm * angle_norm
 
         if score < best_score:
-            best_score = score
             best_i = i_local
-            best_angle = angle_deg
 
-    closest_point = top_pts[best_i]
+
     closest_layer = top_labs[best_i]
-    closest_file = top_srcs[best_i]
     closest_distance = top_dists[best_i]
     angle_deg = best_angle
 
@@ -306,4 +242,4 @@ else:
         "top_k_for_angle": top_k_for_angle,
         "angle_weight_mm": angle_weight_mm
     }
-    write_output_and_print(closest_point, closest_layer, closest_file, centroid_ras, angle_deg=angle_deg, dist_mm=closest_distance, params=params_dict)
+    write_output_and_print(angle_deg=angle_deg, dist_mm=closest_distance, params=params_dict)
