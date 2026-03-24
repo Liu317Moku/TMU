@@ -5,8 +5,8 @@ import csv
 from sklearn.decomposition import PCA
 
 #  參數設定
-input_dir = "/home/sandy0317/CranialCTProcessing/label_dataset/one_at_five/coronal_forward_from_suture_localnorm_106_11070033"
-output_dir = "point_dataset/coronal_forward_points_0106_11070108"
+input_dir = "/home/CranialCTProcessing/label_dataset/one_at_five"
+output_dir = "point_dataset/"
 spacing_mm = 1.0  # 每 1 mm 取 1 點
 os.makedirs(output_dir, exist_ok=True)
 
@@ -25,9 +25,6 @@ def voxel_to_ras(coords_voxel, image):
 
 
 def resample_side_points(coords_voxel_side, spacing_mm, image):
-    if len(coords_voxel_side) < 2:
-        return []
-
     spacing = np.array(image.GetSpacing())
     origin = np.array(image.GetOrigin())
     direction = np.array(image.GetDirection()).reshape(3, 3)
@@ -40,7 +37,6 @@ def resample_side_points(coords_voxel_side, spacing_mm, image):
 
     # 排序
     proj = np.dot(coords_voxel_side - center, main_dir)
-    sorted_idx = np.argsort(proj)
     sorted_coords = coords_voxel_side[sorted_idx]
 
     # voxel -> physical (LPS)
@@ -48,12 +44,10 @@ def resample_side_points(coords_voxel_side, spacing_mm, image):
     for voxel_z, voxel_y, voxel_x in sorted_coords:
         voxel_coord = np.array([voxel_x, voxel_y, voxel_z])
         pt = origin + direction @ (voxel_coord * spacing)
-        pts_lps.append(pt)
     pts_lps = np.array(pts_lps)
 
     # 累積距離
     seg_len = np.linalg.norm(np.diff(pts_lps, axis=0), axis=1)
-    cumlen = np.insert(np.cumsum(seg_len), 0, 0.0)
     max_len = cumlen[-1]
     targets = np.arange(0, max_len, spacing_mm)
 
@@ -63,13 +57,9 @@ def resample_side_points(coords_voxel_side, spacing_mm, image):
         idx = np.searchsorted(cumlen, td)
         if idx == 0:
             pt = pts_lps[0]
-        elif idx >= len(cumlen):
-            pt = pts_lps[-1]
         else:
             t = (td - cumlen[idx-1]) / (cumlen[idx] - cumlen[idx-1])
             pt = pts_lps[idx-1] * (1 - t) + pts_lps[idx] * t
-        pt_ras = [-pt[0], -pt[1], pt[2]]
-        sampled_pts.append(pt_ras)
     return sampled_pts
 
 
@@ -83,18 +73,17 @@ def save_csv(points, out_path):
 
 # 批次處理
 all_files = sorted([f for f in os.listdir(input_dir) if f.endswith(".mha")])
-print(f"📁 偵測到 {len(all_files)} 個影像檔案可處理")
+print(f" 偵測到 {len(all_files)} 個影像檔案可處理")
 
 for fname in all_files:
     input_path = os.path.join(input_dir, fname)
-    print(f"\n🧩 處理中: {fname}")
+    print(f"\n 處理中: {fname}")
 
     image = sitk.ReadImage(input_path)
-    mask_array = sitk.GetArrayFromImage(image)
     coords_voxel = np.argwhere(mask_array > 0)
 
     if len(coords_voxel) < 10:
-        print(f"⚠️ {fname} 非零點太少，略過。")
+        print(f" {fname} 非零點太少，略過。")
         continue
 
     mid_x = mask_array.shape[2] // 2
@@ -108,6 +97,6 @@ for fname in all_files:
     # 儲存
     out_csv = os.path.join(output_dir, fname.replace(".mha", "_points.csv"))
     save_csv(points_all, out_csv)
-    print(f"✅ {fname} 轉換完成，共 {len(points_all)} 點，輸出至 {out_csv}")
+    print(f" {fname} 轉換完成，共 {len(points_all)} 點，輸出至 {out_csv}")
 
-print("\n🎉 全部影像轉換完成！")
+print("\n 全部影像轉換完成！")
