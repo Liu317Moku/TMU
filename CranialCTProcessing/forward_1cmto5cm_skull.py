@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 
 
 #路徑設定
-skull_path = "/home/sandy0317/CranialCTProcessing/label_dataset/coronal_suture/output_final_0106_11062357/seg_z_adjusted.mha"
-suture_path = "/home/sandy0317/CranialCTProcessing/label_dataset/coronal_suture/output_final_0106_11062357/coronal_suture_result.mha"
-output_dir = "/home/sandy0317/CranialCTProcessing/label_dataset/one_at_five/coronal_forward_from_suture_localnorm_106_11070033"
+skull_path = "/home/CranialCTProcessing/label_dataset/seg_z_adjusted.mha"
+suture_path = "/home/CranialCTProcessing/label_dataset/coronal_suture_result.mha"
+output_dir = "/home/CranialCTProcessing/label_dataset/one_at_five"
 os.makedirs(output_dir, exist_ok=True)
 
 # 參數設定
@@ -20,7 +20,7 @@ max_range_mm = 50        # 向外延伸距離
 step_mm = 1              # 每層厚度 1 mm
 
 #讀取 segmentation
-print("📂 讀取影像中...")
+print("讀取影像中...")
 skull_img = sitk.ReadImage(skull_path)
 suture_img = sitk.ReadImage(suture_path)
 skull_arr = sitk.GetArrayFromImage(skull_img)
@@ -29,7 +29,7 @@ suture_arr = sitk.GetArrayFromImage(suture_img)
 spacing = np.array(skull_img.GetSpacing())
 origin = np.array(skull_img.GetOrigin())
 direction = np.array(skull_img.GetDirection()).reshape(3, 3)
-print("🦴 spacing:", spacing)
+print("spacing:", spacing)
 
 #  index → physical
 def index_to_physical(idxs):
@@ -37,55 +37,41 @@ def index_to_physical(idxs):
 
 suture_inds = np.argwhere(suture_arr > 0)
 if len(suture_inds) == 0:
-    raise RuntimeError("❌ 冠狀顱縫 segmentation 為空")
-
-suture_coords = index_to_physical(suture_inds[:, ::-1])
-skull_inds = np.argwhere(skull_arr > 0)
-skull_coords = index_to_physical(skull_inds[:, ::-1])
+    raise RuntimeError("冠狀顱縫 segmentation 為空")
 
 #  局部 PCA 計算每點法向
-print("🔍 計算局部法向中...")
+print("計算局部法向中...")
 nbrs = NearestNeighbors(n_neighbors=neighbor_k).fit(suture_coords)
-distances, indices = nbrs.kneighbors(suture_coords)
 
 normals = np.zeros_like(suture_coords)
 for i, neigh_idx in enumerate(indices):
     local_pts = suture_coords[neigh_idx]
     pca = PCA(n_components=3)
-    pca.fit(local_pts)
-    n = pca.components_[-1]  # 最小變異方向（顱縫法向）
     n = n + down_weight * np.array([0, 0, -1])  # 下偏修正
     n /= np.linalg.norm(n)
-    normals[i] = n
 
-#  確認正確方向（往外側）
-print("🧭 修正法向方向中...")
+print("修正法向方向中...")
 nearest = NearestNeighbors(n_neighbors=1).fit(suture_coords)
-dist, idx = nearest.kneighbors(skull_coords)
-nearest_suture = suture_coords[idx[:, 0]]
 nearest_norm = normals[idx[:, 0]]
 
 sample_idx = np.random.choice(len(skull_coords), size=min(2000, len(skull_coords)), replace=False)
-inside_points = skull_coords[sample_idx]
 proj = np.sum((inside_points - nearest_suture[sample_idx]) * nearest_norm[sample_idx], axis=1)
 mean_proj = np.mean(proj)
 
 if mean_proj > 0:
     normals = -normals
-    print("🔄 法向方向翻轉（改為往顱外）✅")
+    print("法向方向翻轉（改為往顱外）")
 else:
-    print("✅ 法向方向正確（往顱外）")
+    print("法向方向正確（往顱外）")
 
 #  計算 skull 每點到顱縫的投影距離
-print("📏 計算顱骨距離中...")
+print("計算顱骨距離中...")
 nearest = NearestNeighbors(n_neighbors=1).fit(suture_coords)
 dist, idx = nearest.kneighbors(skull_coords)
 nearest_suture = suture_coords[idx[:, 0]]
-nearest_norm = normals[idx[:, 0]]
-proj = np.sum((skull_coords - nearest_suture) * nearest_norm, axis=1)
 
-#  儲存每層 mask（排除冠狀縫，細分1mm）
-print("💾 開始輸出距離層...")
+#  儲存每層 mask（細分1mm）
+print("開始輸出距離層...")
 
 valid_mask = proj > exclude_suture_th
 proj_valid = proj[valid_mask]
@@ -95,30 +81,24 @@ def save_mask(sel_idx, path):
     mask = np.zeros_like(skull_arr, dtype=np.uint8)
     mask[tuple(sel_idx.T)] = 1
     img = sitk.GetImageFromArray(mask)
-    img.CopyInformation(skull_img)
-    sitk.WriteImage(img, path)
-
-# ✅ 每 1 mm 一層，從 1mm 開始
-ranges_mm = [(i, i + step_mm) for i in range(1, max_range_mm, step_mm)]
+    
 for (a, b) in ranges_mm:
     sel = (proj_valid >= a) & (proj_valid < b)
     if np.sum(sel) == 0:
         continue
-    path = os.path.join(output_dir, f"skull_from_suture_{a}-{b}mm.mha")
     save_mask(skull_inds_valid[sel], path)
-    print(f"✅ {a}-{b} mm 輸出完成 ({np.sum(sel)} voxels)")
+    print(f" {a}-{b} mm 輸出完成 ({np.sum(sel)} voxels)")
 
 #  額外輸出 1–50 mm 的整合檔
-print("💾 輸出整合檔 (1–50mm)...")
-sel_total = (proj_valid >= 1) & (proj_valid < 50)
+print("輸出整合檔 (1–50mm)...")
 if np.sum(sel_total) > 0:
     path_total = os.path.join(output_dir, "skull_from_suture_1-50mm.mha")
     save_mask(skull_inds_valid[sel_total], path_total)
-    print(f"✅ 1–50 mm 整合檔輸出完成 ({np.sum(sel_total)} voxels)")
+    print(f" 1–50 mm 整合檔輸出完成 ({np.sum(sel_total)} voxels)")
 else:
-    print("⚠️ 沒有符合 1–50 mm 範圍的點")
+    print(" 沒有符合 1–50 mm 範圍的點")
 
-print("🎯 所有層已輸出完成:", output_dir)
+print("所有層已輸出完成:", output_dir)
 
 #  可視化 (局部法向)
 sample = suture_coords[::300]
